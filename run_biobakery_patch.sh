@@ -93,26 +93,65 @@ else
 fi
 
 # The fastq output by kneaddata that has been QC'd, trimmed, and host reads removed.
-CLEANED=$(find "${OUTDIR}/kneaddata_output" -name '*_kneaddata.fastq' | head -n 1)
+if [[ "$TYPE" == "paired" ]]; then
+    CLEANED1=$(find "${OUTDIR}/kneaddata_output" -name '*_kneaddata_paired_1.fastq' | head -n 1)
+    CLEANED2=$(find "${OUTDIR}/kneaddata_output" -name '*_kneaddata_paired_2.fastq' | head -n 1)
+    CONCAT_CLEANED="${OUTDIR}/concatenated_kneaddata.fastq"
+    cat "$CLEANED1" "$CLEANED2" > "$CONCAT_CLEANED"
+else
+    CLEANED=$(find "${OUTDIR}/kneaddata_output" -name '*_kneaddata.fastq' | head -n 1)
+fi
 
 # --- Run MetaPhlAn ---
 echo "Running MetaPhlAn..."
-metaphlan --input_type fastq \
-          --nproc "$THREADS" \
-          --bowtie2db /bioinfo/apps/all_apps/miniforge3/envs/biobakery_patch/lib/python3.7/site-packages/metaphlan/metaphlan_databases/ \
-          --index mpa_v31_CHOCOPhlAn_201901 \
-          --output_file "${OUTDIR}/metaphlan_profile.txt" \
-          --add_viruses \
-          "$CLEANED"
+if [[ "$TYPE" == "paired" ]]; then
+    metaphlan --input_type fastq \
+              --nproc "$THREADS" \
+              --bowtie2db /bioinfo/apps/all_apps/miniforge3/envs/biobakery_patch/lib/python3.7/site-packages/metaphlan/metaphlan_databases/ \
+              --index mpa_v31_CHOCOPhlAn_201901 \
+              --output_file "${OUTDIR}/metaphlan_profile.txt" \
+              --add_viruses \
+              "$CONCAT_CLEANED"
+else
+    metaphlan --input_type fastq \
+              --nproc "$THREADS" \
+              --bowtie2db /bioinfo/apps/all_apps/miniforge3/envs/biobakery_patch/lib/python3.7/site-packages/metaphlan/metaphlan_databases/ \
+              --index mpa_v31_CHOCOPhlAn_201901 \
+              --output_file "${OUTDIR}/metaphlan_profile.txt" \
+              --add_viruses \
+              "$CLEANED"
+fi
 
 # --- Run HUMAnN ---
 echo "Running HUMAnN..."
-humann --input "$CLEANED" \
-       --output "${OUTDIR}/humann_output" \
-       --threads "$THREADS" \
-       --taxonomic-profile "${OUTDIR}/metaphlan_profile.txt" \
-       --nucleotide-database /bioinfo/apps/all_apps/miniforge3/envs/biobakery4/Humann_DB/chocophlan/ \
-       --protein-database /bioinfo/apps/all_apps/miniforge3/envs/biobakery4/Humann_DB/uniref/
+if [[ "$TYPE" == "paired" ]]; then
+    humann --input "$CONCAT_CLEANED" \
+           --output "${OUTDIR}/humann_output" \
+           --threads "$THREADS" \
+           --taxonomic-profile "${OUTDIR}/metaphlan_profile.txt" \
+           --nucleotide-database /bioinfo/apps/all_apps/miniforge3/envs/biobakery4/Humann_DB/chocophlan/ \
+           --protein-database /bioinfo/apps/all_apps/miniforge3/envs/biobakery4/Humann_DB/uniref/
+else
+    humann --input "$CLEANED" \
+           --output "${OUTDIR}/humann_output" \
+           --threads "$THREADS" \
+           --taxonomic-profile "${OUTDIR}/metaphlan_profile.txt" \
+           --nucleotide-database /bioinfo/apps/all_apps/miniforge3/envs/biobakery4/Humann_DB/chocophlan/ \
+           --protein-database /bioinfo/apps/all_apps/miniforge3/envs/biobakery4/Humann_DB/uniref/
+fi
+
+# --- Run MegaHit ---
+echo "Running MegaHit..."
+if [[ "$TYPE" == "paired" ]]; then
+    megahit -t "$THREADS" \
+            -1 "$CLEANED1" \
+            -2 "$CLEANED2" \
+            -o "${OUTDIR}/megahit_assembly"
+else
+    megahit -t "$THREADS" \
+            -r "$CLEANED" \
+            -o "${OUTDIR}/megahit_assembly"
+fi
 
 echo "Done! All outputs are organized in: $OUTDIR"
 
