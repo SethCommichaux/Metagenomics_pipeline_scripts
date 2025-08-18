@@ -50,58 +50,86 @@ fi
 ASSEMBLY=$(realpath "$ASSEMBLY")
 READS1=$(realpath "$READS1")
 OUTDIR=$(realpath "$OUTDIR")
+
 if [[ -n "$READS2" ]]; then
   READS2=$(realpath "$READS2")
 fi
 
 # === SETUP ===
-# mkdir -p "$OUTDIR"/{mapping,coverage,bins/metabat2,bins/maxbin2,bins/concoct,dastool,checkm2,gtdbtk,annotation}
+mkdir -p "$OUTDIR"/{mapping,coverage,bins/metabat2,bins/maxbin2,bins/concoct,dastool,checkm2,gtdbtk,annotation}
 cd "$OUTDIR"
 
 # === STEP 1: Mapping ===
-# bowtie2-build "$ASSEMBLY" mapping/assembly_index
+bowtie2-build "$ASSEMBLY" mapping/assembly_index
 
-# if [[ -n "$READS2" ]]; then
-#  echo "🧬 Detected paired-end reads"
-#  bowtie2 -x mapping/assembly_index -1 "$READS1" -2 "$READS2" | samtools view -bS - > mapping/mapped.bam
-# else
-#  echo "🧬 Detected single-end reads"
-#  bowtie2 -x mapping/assembly_index -U "$READS1" | samtools view -bS - > mapping/mapped.bam
-# fi
+if [[ -n "$READS2" ]]; then
+  echo "Detected paired-end reads"
+  bowtie2 -x mapping/assembly_index -1 "$READS1" -2 "$READS2" | samtools view -bS - > mapping/mapped.bam
+else
+  echo "Detected single-end reads"
+  bowtie2 -x mapping/assembly_index -U "$READS1" | samtools view -bS - > mapping/mapped.bam
+fi
 
-# samtools sort mapping/mapped.bam -o mapping/sorted.bam
-# samtools index mapping/sorted.bam
+samtools sort mapping/mapped.bam -o mapping/sorted.bam
+samtools index mapping/sorted.bam
 
 # === STEP 2: Coverage ===
-# jgi_summarize_bam_contig_depths --outputDepth coverage/depth.txt mapping/sorted.bam
+jgi_summarize_bam_contig_depths --outputDepth coverage/depth.txt mapping/sorted.bam
 
 # === STEP 3: MetaBAT2 ===
-# metabat2 -i "$ASSEMBLY" -a coverage/depth.txt -o bins/metabat2/bin -t "$THREADS"
+metabat2 -i "$ASSEMBLY" -a coverage/depth.txt -o bins/metabat2/bin -t "$THREADS"
 
 # === STEP 4: MaxBin2 ===
-# run_MaxBin.pl -contig "$ASSEMBLY" -out bins/maxbin2/bin -abund coverage/depth.txt -thread "$THREADS"
+run_MaxBin.pl -contig "$ASSEMBLY" -out bins/maxbin2/bin -abund coverage/depth.txt -thread "$THREADS"
 
 # === STEP 5: CONCOCT ===
-# cut_up_fasta.py "$ASSEMBLY" -c 10000 -o 0 --merge_last -b concoct_contigs.bed > concoct_contigs.fa
-# concoct_coverage_table.py concoct_contigs.bed mapping/sorted.bam > concoct_coverage.tsv
-# concoct --composition_file concoct_contigs.fa --coverage_file concoct_coverage.tsv -b bins/concoct/
-# mkdir bins/concoct/extracted_bins
-# extract_fasta_bins.py --output_path bins/concoct/extracted_bins concoct_contigs.fa bins/concoct/clustering_gt1000.csv
+cut_up_fasta.py "$ASSEMBLY" -c 10000 -o 0 --merge_last -b concoct_contigs.bed > concoct_contigs.fa
+concoct_coverage_table.py concoct_contigs.bed mapping/sorted.bam > concoct_coverage.tsv
+concoct --composition_file concoct_contigs.fa --coverage_file concoct_coverage.tsv -b bins/concoct/
+mkdir bins/concoct/extracted_bins
+extract_fasta_bins.py --output_path bins/concoct/extracted_bins concoct_contigs.fa bins/concoct/clustering_gt1000.csv
 
 # === STEP 6: DASTool ===
-DAS_Tool -i metabat2:"$OUTDIR"/bins/metabat2/,maxbin2:"$OUTDIR"/bins/maxbin2/,concoct:"$OUTDIR"/bins/concoct/extracted_bins/ \
-        -l metabat2,maxbin2,concoct -o dastool/dastool -t "$THREADS" -c "$ASSEMBLY"
+# Define input bin directories
+BIN_DIR_METABAT2="$OUTDIR/bins/metabat2/"
+BIN_DIR_MAXBIN2="$OUTDIR/bins/maxbin2/"
+BIN_DIR_CONCOCT="$OUTDIR/bins/concoct/extracted_bins/"
 
-# === STEP 7: CheckM2 ===
-checkm2 predict -x fa dastool/dastool_DASTool_bins/ checkm2/ --threads "$THREADS"
+# Define output mapping files
+MAP_METABAT2="dastool/metabat2_contigs2bin.tsv"
+MAP_MAXBIN2="dastool/maxbin2_contigs2bin.tsv"
+MAP_CONCOCT="dastool/concoct_contigs2bin.tsv"
 
-# === STEP 8: GTDB-Tk ===
-gtdbtk classify_wf --genome_dir dastool/dastool_DASTool_bins/ --out_dir gtdbtk/ --cpus "$THREADS"
+# Function to generate contigs2bin mapping
+generate_mapping() {
+    local BIN_DIR=$1
+    local OUT_FILE=$2
+    > "$OUT_FILE"
+    for BIN in "$BIN_DIR"/*.fa*; do
+        BIN_NAME=$(basename "$BIN")
+        grep "^>" "$BIN" | sed 's/>//' | awk -F'[ .\t]' -v bin="$BIN_NAME" '{print $1 "\t" bin}' >> "$OUT_FILE"
+    done
+}
+
+# Generate mappings
+generate_mapping "$BIN_DIR_METABAT2" "$MAP_METABAT2"
+generate_mapping "$BIN_DIR_MAXBIN2" "$MAP_MAXBIN2"
+generate_mapping "$BIN_DIR_CONCOCT" "$MAP_CONCOCT"
+
+# Run DASTool
+DAS_Tool \
+    -i "$MAP_METABAT2","$MAP_MAXBIN2","$MAP_CONCOCT" \
+    -l metabat2,maxbin2,concoct \
+    -o dastool/dastool \
+    -t "$THREADS" \
+    -c "$ASSEMBLY" \
+    --write_bins
+
+# === STEP 7: GTDB-Tk ===
+gtdbtk classify_wf --extension fa --genome_dir dastool/dastool_DASTool_bins/ --out_dir gtdbtk/ --cpus "$THREADS"
 
 # === STEP 9: Annotation ===
 for bin in dastool/dastool_DASTool_bins/*.fa; do
   BASENAME=$(basename "$bin" .fa)
-  prokka --outdir annotation/"$BASENAME" --prefix "$BASENAME" "$bin" --cpus "$THREADS"
-  # OR use Bakta:
-  # bakta --db /path/to/bakta/db --output annotation/"$BASENAME" --prefix "$BASENAME" --threads "$THREADS" --genome "$bin"
+  bakta --db /path/to/bakta/db --output annotation/"$BASENAME" --prefix "$BASENAME" --threads "$THREADS" --genome "$bin"
 done
