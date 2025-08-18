@@ -131,5 +131,5 @@ gtdbtk classify_wf --extension fa --genome_dir dastool/dastool_DASTool_bins/ --o
 # === STEP 9: Annotation ===
 for bin in dastool/dastool_DASTool_bins/*.fa; do
   BASENAME=$(basename "$bin" .fa)
-  bakta --db /path/to/bakta/db --output annotation/"$BASENAME" --prefix "$BASENAME" --threads "$THREADS" --genome "$bin"
+  bakta --db /bioinfo/apps/all_apps/miniforge3/envs/MAG_Pipeline/bakta_db/ --output annotation/"$BASENAME" --prefix "$BASENAME" --threads "$THREADS" --genome "$bin"
 done
