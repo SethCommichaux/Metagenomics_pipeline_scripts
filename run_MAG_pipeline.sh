@@ -1,161 +1,107 @@
 #!/bin/bash
+set -euo pipefail
 
-# This version of biobakery is a patch because the latest versions of Humann (v3.9) and Metaphlan (v4.2.2) are not compatible
-# This version runs the latests KneadData, Humann v3.9 and Metaphlan v3.1 which are compatible
-# The BioBakery team working to release a new version of Humann that will be forward compatible with Metaphlan
-
-# --- Load BioBakery conda environment before running this script!!! ---
+### === Description ===
+# This bash script chains various tools together to bin and annotate the MAGs within a metagenomic assembly.
+# The inputs are a metagenomic assembly and the reads that were used to create the assembly.
 #
-# miniforge3
-# conda activate biobakery_patch
+# Before using make sure to load conda and the conda environment.
+#
+# miniforge3; conda activate MAG_Pipeline
 
-echo "Starting time"
-echo `date`
-echo ""
-
-# --- Help Menu ---
+# === USAGE ===
 usage() {
-    echo ""
-    echo "BioBakery4 Core Pipeline Runner"
-    echo ""
-    echo "Usage:"
-    echo "  biobakery4_core_run.sh -type <paired|single> -threads <num_threads> \\"
-    echo "                         -read1 <read1.fq> -read2 <read2.fq> -out <output_dir>"
-    echo "  OR"
-    echo "  biobakery4_core_run.sh -type single -threads <num_threads> \\"
-    echo "                         -unpaired <read.fq> -out <output_dir>"
-    echo ""
-    echo "Options:"
-    echo "  -type       Type of input: 'paired' or 'single'"
-    echo "  -threads    Number of threads for parallel processing"
-    echo "  -read1      Forward reads file (required for paired-end)"
-    echo "  -read2      Reverse reads file (required for paired-end)"
-    echo "  -unpaired   Reads file (required for single-end)"
-    echo "  -out        Output directory name"
-    echo "  -h          Show this help menu"
-    echo ""
-    exit 0
+  echo "Usage: $0 --assembly <assembly.fa> --reads1 <reads_1.fastq> [--reads2 <reads_2.fastq>] --threads <threads> --outdir <output_dir>"
+  exit 1
 }
 
-# --- Argument Parsing ---
-while [[ "$#" -gt 0 ]]; do
-    case $1 in
-        -type) TYPE="$2"; shift ;;
-        -threads) THREADS="$2"; shift ;;
-        -read1) READ1="$2"; shift ;;
-        -read2) READ2="$2"; shift ;;
-        -unpaired) UNPAIRED="$2"; shift ;;
-        -out) OUTDIR="$2"; shift ;;
-        -h) usage ;;
-        *) echo "Unknown parameter: $1"; usage ;;
-    esac
-    shift
+# === PARSE ARGS ===
+ARGS=$(getopt -o a:1:2:t:o: -l assembly:,reads1:,reads2:,threads:,outdir: -- "$@")
+if [[ $? -ne 0 ]]; then
+  usage
+fi
+
+eval set -- "$ARGS"
+
+ASSEMBLY=""
+READS1=""
+READS2=""
+THREADS=""
+OUTDIR=""
+
+while true; do
+  case "$1" in
+    -a|--assembly) ASSEMBLY="$2"; shift 2 ;;
+    -1|--reads1)   READS1="$2"; shift 2 ;;
+    -2|--reads2)   READS2="$2"; shift 2 ;;
+    -t|--threads)  THREADS="$2"; shift 2 ;;
+    -o|--outdir)   OUTDIR="$2"; shift 2 ;;
+    --) shift; break ;;
+    *) usage ;;
+  esac
 done
 
-# --- Validation ---
-if [[ -z "$TYPE" || -z "$THREADS" || -z "$OUTDIR" ]]; then
-    echo "❌ Missing required parameters."
-    usage
+# === CHECK REQUIRED ===
+if [[ -z "$ASSEMBLY" || -z "$READS1" || -z "$THREADS" || -z "$OUTDIR" ]]; then
+  usage
 fi
 
-if [[ "$TYPE" == "paired" ]]; then
-    if [[ -z "$READ1" || -z "$READ2" ]]; then
-        echo "❌ For paired-end data, -read1 and -read2 are required."
-        usage
-    fi
-elif [[ "$TYPE" == "single" ]]; then
-    if [[ -z "$UNPAIRED" ]]; then
-        echo "❌ For single-end data, -unpaired is required."
-        usage
-    fi
-else
-    echo "❌ Invalid type: $TYPE. Must be 'paired' or 'single'."
-    usage
+# === Set file path variables to their real paths ===
+ASSEMBLY=$(realpath "$ASSEMBLY")
+READS1=$(realpath "$READS1")
+OUTDIR=$(realpath "$OUTDIR")
+if [[ -n "$READS2" ]]; then
+  READS2=$(realpath "$READS2")
 fi
 
-mkdir -p "$OUTDIR"
+# === SETUP ===
+# mkdir -p "$OUTDIR"/{mapping,coverage,bins/metabat2,bins/maxbin2,bins/concoct,dastool,checkm2,gtdbtk,annotation}
+cd "$OUTDIR"
 
-# --- Run KneadData ---
-echo "Running KneadData..."
-if [[ "$TYPE" == "paired" ]]; then
-    kneaddata -i1 "$READ1" \
-              -i2 "$READ2" \
-              -o "${OUTDIR}/kneaddata_output" \
-              -t "$THREADS" \
-              -db /bioinfo/apps/all_apps/miniforge3/envs/biobakery4/KneadData_DB/ \
-              --bypass-trf
-else
-    kneaddata -un "$UNPAIRED" \
-              -o "${OUTDIR}/kneaddata_output" \
-              -t "$THREADS" \
-              -db /bioinfo/apps/all_apps/miniforge3/envs/biobakery4/KneadData_DB/ \
-              --bypass-trf
-fi
+# === STEP 1: Mapping ===
+# bowtie2-build "$ASSEMBLY" mapping/assembly_index
 
-# The fastq output by kneaddata that has been QC'd, trimmed, and host reads removed.
-if [[ "$TYPE" == "paired" ]]; then
-    CLEANED1=$(find "${OUTDIR}/kneaddata_output" -name '*_kneaddata_paired_1.fastq' | head -n 1)
-    CLEANED2=$(find "${OUTDIR}/kneaddata_output" -name '*_kneaddata_paired_2.fastq' | head -n 1)
-    CONCAT_CLEANED="${OUTDIR}/concatenated_kneaddata.fastq"
-    cat "$CLEANED1" "$CLEANED2" > "$CONCAT_CLEANED"
-else
-    CLEANED=$(find "${OUTDIR}/kneaddata_output" -name '*_kneaddata.fastq' | head -n 1)
-fi
+# if [[ -n "$READS2" ]]; then
+#  echo "🧬 Detected paired-end reads"
+#  bowtie2 -x mapping/assembly_index -1 "$READS1" -2 "$READS2" | samtools view -bS - > mapping/mapped.bam
+# else
+#  echo "🧬 Detected single-end reads"
+#  bowtie2 -x mapping/assembly_index -U "$READS1" | samtools view -bS - > mapping/mapped.bam
+# fi
 
-# --- Run MetaPhlAn ---
-echo "Running MetaPhlAn..."
-if [[ "$TYPE" == "paired" ]]; then
-    metaphlan --input_type fastq \
-              --nproc "$THREADS" \
-              --bowtie2db /bioinfo/apps/all_apps/miniforge3/envs/biobakery_patch/lib/python3.7/site-packages/metaphlan/metaphlan_databases/ \
-              --index mpa_v31_CHOCOPhlAn_201901 \
-              --output_file "${OUTDIR}/metaphlan_profile.txt" \
-              --add_viruses \
-              "$CONCAT_CLEANED"
-else
-    metaphlan --input_type fastq \
-              --nproc "$THREADS" \
-              --bowtie2db /bioinfo/apps/all_apps/miniforge3/envs/biobakery_patch/lib/python3.7/site-packages/metaphlan/metaphlan_databases/ \
-              --index mpa_v31_CHOCOPhlAn_201901 \
-              --output_file "${OUTDIR}/metaphlan_profile.txt" \
-              --add_viruses \
-              "$CLEANED"
-fi
+# samtools sort mapping/mapped.bam -o mapping/sorted.bam
+# samtools index mapping/sorted.bam
 
-# --- Run HUMAnN ---
-echo "Running HUMAnN..."
-if [[ "$TYPE" == "paired" ]]; then
-    humann --input "$CONCAT_CLEANED" \
-           --output "${OUTDIR}/humann_output" \
-           --threads "$THREADS" \
-           --taxonomic-profile "${OUTDIR}/metaphlan_profile.txt" \
-           --nucleotide-database /bioinfo/apps/all_apps/miniforge3/envs/biobakery4/Humann_DB/chocophlan/ \
-           --protein-database /bioinfo/apps/all_apps/miniforge3/envs/biobakery4/Humann_DB/uniref/
-else
-    humann --input "$CLEANED" \
-           --output "${OUTDIR}/humann_output" \
-           --threads "$THREADS" \
-           --taxonomic-profile "${OUTDIR}/metaphlan_profile.txt" \
-           --nucleotide-database /bioinfo/apps/all_apps/miniforge3/envs/biobakery4/Humann_DB/chocophlan/ \
-           --protein-database /bioinfo/apps/all_apps/miniforge3/envs/biobakery4/Humann_DB/uniref/
-fi
+# === STEP 2: Coverage ===
+# jgi_summarize_bam_contig_depths --outputDepth coverage/depth.txt mapping/sorted.bam
 
-# --- Run MegaHit ---
-echo "Running MegaHit..."
-if [[ "$TYPE" == "paired" ]]; then
-    megahit -t "$THREADS" \
-            -1 "$CLEANED1" \
-            -2 "$CLEANED2" \
-            -o "${OUTDIR}/megahit_assembly"
-else
-    megahit -t "$THREADS" \
-            -r "$CLEANED" \
-            -o "${OUTDIR}/megahit_assembly"
-fi
+# === STEP 3: MetaBAT2 ===
+# metabat2 -i "$ASSEMBLY" -a coverage/depth.txt -o bins/metabat2/bin -t "$THREADS"
 
-echo "Done! All outputs are organized in: $OUTDIR"
+# === STEP 4: MaxBin2 ===
+# run_MaxBin.pl -contig "$ASSEMBLY" -out bins/maxbin2/bin -abund coverage/depth.txt -thread "$THREADS"
 
-echo ""
-echo "Finish time"
-echo `date`
-echo ""
+# === STEP 5: CONCOCT ===
+# cut_up_fasta.py "$ASSEMBLY" -c 10000 -o 0 --merge_last -b concoct_contigs.bed > concoct_contigs.fa
+# concoct_coverage_table.py concoct_contigs.bed mapping/sorted.bam > concoct_coverage.tsv
+# concoct --composition_file concoct_contigs.fa --coverage_file concoct_coverage.tsv -b bins/concoct/
+# mkdir bins/concoct/extracted_bins
+# extract_fasta_bins.py --output_path bins/concoct/extracted_bins concoct_contigs.fa bins/concoct/clustering_gt1000.csv
+
+# === STEP 6: DASTool ===
+DAS_Tool -i metabat2:"$OUTDIR"/bins/metabat2/,maxbin2:"$OUTDIR"/bins/maxbin2/,concoct:"$OUTDIR"/bins/concoct/extracted_bins/ \
+        -l metabat2,maxbin2,concoct -o dastool/dastool -t "$THREADS" -c "$ASSEMBLY"
+
+# === STEP 7: CheckM2 ===
+checkm2 predict -x fa dastool/dastool_DASTool_bins/ checkm2/ --threads "$THREADS"
+
+# === STEP 8: GTDB-Tk ===
+gtdbtk classify_wf --genome_dir dastool/dastool_DASTool_bins/ --out_dir gtdbtk/ --cpus "$THREADS"
+
+# === STEP 9: Annotation ===
+for bin in dastool/dastool_DASTool_bins/*.fa; do
+  BASENAME=$(basename "$bin" .fa)
+  prokka --outdir annotation/"$BASENAME" --prefix "$BASENAME" "$bin" --cpus "$THREADS"
+  # OR use Bakta:
+  # bakta --db /path/to/bakta/db --output annotation/"$BASENAME" --prefix "$BASENAME" --threads "$THREADS" --genome "$bin"
+done
