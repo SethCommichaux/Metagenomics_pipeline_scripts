@@ -5,6 +5,9 @@
 # The BioBakery team is working to fix this problem in the next release of Humann.
 # As such, this version runs Humann v3.9 with Metaphlan v3.1 which are compatible.
 
+# To execute the script simply execute as follows:
+# bash run_biobakery_patch.sh <options>
+
 # --- Load Conda environment ---
 source /bioinfo/apps/all_apps/miniforge3/etc/profile.d/conda.sh
 conda activate biobakery4
