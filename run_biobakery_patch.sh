@@ -1,17 +1,22 @@
 #!/bin/bash
 
-# This version of biobakery is a patch because the latest versions of Humann (v3.9) and Metaphlan (v4.2.2) are not compatible
-# This version runs the latests KneadData, Humann v3.9 and Metaphlan v3.1 which are compatible
-# The BioBakery team working to release a new version of Humann that will be forward compatible with Metaphlan
+# This version of biobakery is a patch. It runs the newest versions of MetaPhlan and KneadData.
+# But the newest versions of Humann and MetaPhlan are not compatible.
+# The BioBakery team is working to fix this problem in the next release of Humann.
+# As such, this version runs Humann v3.9 with Metaphlan v3.1 which are compatible.
 
-# --- Load BioBakery conda environment before running this script!!! ---
-#
-# miniforge3
-# conda activate biobakery_patch
+# --- Load Conda environment ---
+source /bioinfo/apps/all_apps/miniforge3/etc/profile.d/conda.sh
+conda activate biobakery4
 
-echo "Starting time"
-echo `date`
-echo ""
+# --- Load data paths ---
+KNEADDATA_DB='/bioinfo/apps/all_apps/miniforge3/envs/biobakery4/KneadData_DB/'
+METAPHLAN_DB='/bioinfo/apps/all_apps/miniforge3/envs/biobakery4/MetaPhlan_DB/metaphlan_databases/'
+METAPHLAN_DB_INDEX='mpa_vJan25_CHOCOPhlAnSGB_202503'
+METAPHLAN_DB_OLDER='/bioinfo/apps/all_apps/miniforge3/envs/biobakery_patch/lib/python3.7/site-packages/metaphlan/metaphlan_databases/'
+METAPHLAN_DB_INDEX_OLDER='mpa_v31_CHOCOPhlAn_201901'
+HUMANN_NT_DB='/bioinfo/apps/all_apps/miniforge3/envs/biobakery4/Humann_DB/chocophlan/'
+HUMANN_AA_DB='/bioinfo/apps/all_apps/miniforge3/envs/biobakery4/Humann_DB/uniref/'
 
 # --- Help Menu ---
 usage() {
@@ -54,25 +59,36 @@ done
 
 # --- Validation ---
 if [[ -z "$TYPE" || -z "$THREADS" || -z "$OUTDIR" ]]; then
-    echo "❌ Missing required parameters."
+    echo "Missing required parameters."
     usage
 fi
 
 if [[ "$TYPE" == "paired" ]]; then
     if [[ -z "$READ1" || -z "$READ2" ]]; then
-        echo "❌ For paired-end data, -read1 and -read2 are required."
+        echo "For paired-end data, -read1 and -read2 are required."
         usage
     fi
 elif [[ "$TYPE" == "single" ]]; then
     if [[ -z "$UNPAIRED" ]]; then
-        echo "❌ For single-end data, -unpaired is required."
+        echo "For single-end data, -unpaired is required."
         usage
     fi
 else
-    echo "❌ Invalid type: $TYPE. Must be 'paired' or 'single'."
+    echo "Invalid type: $TYPE. Must be 'paired' or 'single'."
     usage
 fi
 
+echo "Starting time"
+echo `date`
+echo ""
+
+# === Set user input paths to their real paths ===
+OUTDIR=$(realpath "$OUTDIR")
+if [[ -n "$READ1" ]]; then READ1=$(realpath "$READ1"); fi
+if [[ -n "$READ2" ]]; then READ2=$(realpath "$READ2"); fi
+if [[ -n "$UNPAIRED" ]]; then UNPAIRED=$(realpath "$UNPAIRED"); fi
+
+# --- Create output directory ---
 mkdir -p "$OUTDIR"
 
 # --- Run KneadData ---
@@ -82,13 +98,13 @@ if [[ "$TYPE" == "paired" ]]; then
               -i2 "$READ2" \
               -o "${OUTDIR}/kneaddata_output" \
               -t "$THREADS" \
-              -db /bioinfo/apps/all_apps/miniforge3/envs/biobakery4/KneadData_DB/ \
+              -db "$KNEADDATA_DB" \
               --bypass-trf
 else
     kneaddata -un "$UNPAIRED" \
               -o "${OUTDIR}/kneaddata_output" \
               -t "$THREADS" \
-              -db /bioinfo/apps/all_apps/miniforge3/envs/biobakery4/KneadData_DB/ \
+              -db "$KNEADDATA_DB" \
               --bypass-trf
 fi
 
@@ -107,20 +123,23 @@ echo "Running MetaPhlAn..."
 if [[ "$TYPE" == "paired" ]]; then
     metaphlan --input_type fastq \
               --nproc "$THREADS" \
-              --bowtie2db /bioinfo/apps/all_apps/miniforge3/envs/biobakery_patch/lib/python3.7/site-packages/metaphlan/metaphlan_databases/ \
-              --index mpa_v31_CHOCOPhlAn_201901 \
-              --output_file "${OUTDIR}/metaphlan_profile.txt" \
-              --add_viruses \
+              --db_dir "$METAPHLAN_DB" \
+              -x "$METAPHLAN_DB_INDEX" \
+              -o "${OUTDIR}/metaphlan_profile.txt" \
               "$CONCAT_CLEANED"
 else
     metaphlan --input_type fastq \
               --nproc "$THREADS" \
-              --bowtie2db /bioinfo/apps/all_apps/miniforge3/envs/biobakery_patch/lib/python3.7/site-packages/metaphlan/metaphlan_databases/ \
-              --index mpa_v31_CHOCOPhlAn_201901 \
-              --output_file "${OUTDIR}/metaphlan_profile.txt" \
-              --add_viruses \
+              --db_dir "$METAPHLAN_DB" \
+              -x "$METAPHLAN_DB_INDEX" \
+              -o "${OUTDIR}/metaphlan_profile.txt" \
               "$CLEANED"
 fi
+
+# --- Load new Conda environment ---
+conda deactivate
+source /bioinfo/apps/all_apps/miniforge3/etc/profile.d/conda.sh
+conda activate biobakery_patch
 
 # --- Run HUMAnN ---
 echo "Running HUMAnN..."
@@ -128,16 +147,16 @@ if [[ "$TYPE" == "paired" ]]; then
     humann --input "$CONCAT_CLEANED" \
            --output "${OUTDIR}/humann_output" \
            --threads "$THREADS" \
-           --taxonomic-profile "${OUTDIR}/metaphlan_profile.txt" \
-           --nucleotide-database /bioinfo/apps/all_apps/miniforge3/envs/biobakery4/Humann_DB/chocophlan/ \
-           --protein-database /bioinfo/apps/all_apps/miniforge3/envs/biobakery4/Humann_DB/uniref/
+           --metaphlan-options "--bowtie2db $METAPHLAN_DB_OLDER --index $METAPHLAN_DB_INDEX_OLDER"
+           --nucleotide-database "$HUMANN_NT_DB" \
+           --protein-database "$HUMANN_AA_DB"
 else
     humann --input "$CLEANED" \
            --output "${OUTDIR}/humann_output" \
            --threads "$THREADS" \
-           --taxonomic-profile "${OUTDIR}/metaphlan_profile.txt" \
-           --nucleotide-database /bioinfo/apps/all_apps/miniforge3/envs/biobakery4/Humann_DB/chocophlan/ \
-           --protein-database /bioinfo/apps/all_apps/miniforge3/envs/biobakery4/Humann_DB/uniref/
+           --metaphlan-options "--bowtie2db $METAPHLAN_DB_OLDER --index $METAPHLAN_DB_INDEX_OLDER"
+           --nucleotide-database "$HUMANN_NT_DB" \
+           --protein-database "$HUMANN_AA_DB"
 fi
 
 # --- Run MegaHit ---
@@ -155,6 +174,7 @@ fi
 
 echo "Done! All outputs are organized in: $OUTDIR"
 
+echo ""
 echo "Finish time"
 echo `date`
 echo ""
